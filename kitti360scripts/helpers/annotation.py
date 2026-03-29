@@ -359,7 +359,7 @@ class Annotation3D:
     # Constructor
     def __init__(self, labelDir='', sequence=''):
 
-        labelPath = glob.glob(os.path.join(labelDir, '*', '%s.xml' % sequence)) # train or test
+        labelPath = glob.glob(os.path.join(labelDir, '%s.xml' % sequence)) # train or test
         if len(labelPath)<1:
             raise RuntimeError('%s does not exist! Please specify KITTI360_DATASET in your environment path.' % labelPath)
         else:
@@ -526,6 +526,125 @@ class Annotation3DInstance(object):
 
     def __str__(self):
         return "("+str(self.instance_id)+")"
+
+
+class Annotation3D_fixed(Annotation3D):
+    # override the init_instance function, to use the override KITTI360Bbox3D.parseBbox function
+    def init_instance(self, labelPath):
+        # load annotation
+        tree = ET.parse(labelPath)
+        root = tree.getroot()
+
+        # Initialize objects, dynamicSeqs and semantic_instance
+        self.objects = defaultdict(dict)
+        self.dynamicSeqs = defaultdict()  # Reset the dictionary
+        self.semantic_instance = defaultdict()  # Reset the dictionary
+
+        self.num_bbox = 0
+
+        for child in root:
+            if child.find('transform') is None:
+                continue
+            obj = KITTI360Bbox3D_fixed(self.dynamicSeqs, self.semantic_instance)
+            obj.parseBbox(child)
+            globalId = local2global(obj.semanticId, obj.instanceId)
+            if obj.hasInstances == False:
+                if globalId in self.objects and obj.timestamp in self.objects[globalId]:
+                    self.objects[globalId][obj.timestamp].append(obj)
+                else:
+                    self.objects[globalId][obj.timestamp] = [obj]
+            else:
+                self.objects[globalId][obj.timestamp] = [obj]
+
+            self.num_bbox+=1
+
+
+class KITTI360Bbox3D_fixed(KITTI360Bbox3D, KITTI360Object):
+
+    def __init__(self, dynamicSeqs, semantic_instance):
+        KITTI360Object.__init__(self)
+        # the polygon as list of points
+        self.vertices = []
+        self.faces = []
+        self.lines = [[0, 5], [1, 4], [2, 7], [3, 6],
+                      [0, 1], [1, 3], [3, 2], [2, 0],
+                      [4, 5], [5, 7], [7, 6], [6, 4]]
+
+        # the ID of the corresponding object
+        self.semanticId = -1
+        self.instanceId = -1
+        self.annotationId = -1
+
+        # the window that contains the bbox
+        self.start_frame = -1
+        self.end_frame = -1
+
+        # timestamp and dynamicSeq of the bbox (-1 if statis)
+        self.timestamp = -1
+        self.dynamicSeq = -1
+
+        # dynamicSeqs and semantic instance dictionaries
+        self.dynamicSeqs = dynamicSeqs
+        self.semantic_instance = semantic_instance
+
+        # projected vertices
+        self.vertices_proj = None
+        self.meshes = []
+
+        # name
+        self.name = ''
+
+        # change names
+        self.classmap = {
+            'ground': 'terrain',
+            'unknownGround': 'ground',
+            'driveway': 'parking'
+        }
+
+    def label2name(self, name):
+        if name in self.classmap.keys():
+            name = self.classmap[name]
+        return name
+
+    def parseVertices(self, child):
+        transform_LW = self.parseOpencvMatrix(child.find('transform'))
+        vertices = self.parseOpencvMatrix(child.find('vertices'))
+        faces = self.parseOpencvMatrix(child.find('faces'))
+
+        self.vertices = vertices
+        self.faces = faces
+        self.transform_LW = transform_LW
+
+    def parseBbox(self, child):
+        self.annotationId = int(child.find('index').text) + 1
+        self.dynamicSeq = int(child.find('dynamicSeq').text)
+        self.timestamp = int(child.find('timestamp').text)
+        self.name = self.label2name(child.find('label').text)
+        label = name2label[self.name]
+        self.semanticId = label.id
+        self.hasInstances = label.hasInstances
+
+        if not self.semanticId in self.dynamicSeqs:
+            self.dynamicSeqs[self.semanticId] = set()
+
+        if not self.hasInstances:
+            self.instanceId = 0
+        else:
+            if not self.semanticId in self.semantic_instance:
+                self.semantic_instance[self.semanticId] = 1
+            else:
+                if self.timestamp == -1 or self.dynamicSeq not in self.dynamicSeqs[self.semanticId]:
+                    self.semantic_instance[self.semanticId] += 1
+            self.instanceId = self.semantic_instance[self.semanticId]
+
+        if self.timestamp != -1:
+            self.dynamicSeqs[self.semanticId].add(self.dynamicSeq)
+
+        self.start_frame = int(child.find('start_frame').text)
+        self.end_frame = int(child.find('end_frame').text)
+
+        self.globalId = local2global(self.semanticId, self.instanceId)
+        self.parseVertices(child)
 
 # a dummy example
 if __name__ == "__main__":
